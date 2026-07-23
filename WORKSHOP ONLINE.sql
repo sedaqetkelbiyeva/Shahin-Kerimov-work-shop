@@ -273,3 +273,6 @@ ORDER BY fraud_count DESC;
 SELECT * FROM TRANSACTIONS ;
 SELECT * FROM CUSTOMERS ;
 SELECT * FROM ACCOUNTS ;
+
+select * from hr.employees;
+
