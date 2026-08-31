@@ -1,0 +1,92 @@
+# Müştəri Seqmentinin Balansa Görə Təyini (PL/SQL Funksiyası)
+
+Bu layihə, Marketinq departamentinin müştərilərə fərqli kampaniyalar planlaşdırması üçün müştəriləri ümumi balans cəmlərinə görə VIP, STANDARD və BASIC qruplarına avtomatik ayıran funksiyadır. 
+
+# Problem və Biznes tələbi
+
+Marketinq və analitika komandaları hər dəfə kampaniya keçirərkən müştərilərin bütün hesablarındakı qalıqları əl ilə toplayıb, fərqli şərtlər (IF/THEN) daxilində qruplaşdırmalı olurdular. Bu biznes məntiqinin hesabatlarda fərqli yazılması seqmentasiya xətalarına və vaxt itkisinə yol açırdı. 
+
+# Həll Yolu
+
+Yaradılmış fn_segment_by_balance funksiyası müştərinin ID-sini qəbul edir, onun bütün aktiv hesablarının balans cəmini hesablayır və mərkəzləşdirilmiş biznes qaydalarına əsasən seqment adını tək sətirdə geri qaytarır. 
+
+# Biznes Qaydaları (Seqmentasiya Şərtləri)
+
+* Balans Cəmi > 10000  -VIP
+* Balans Cəmi 1000 ilə 10000 arası (daxil olmaqla)  -STANDARD
+* Balans Cəmi < 1000 (və ya hesabı olmayanlar) -BASIC
+
+CREATE OR REPLACE FUNCTION fn_segment_by_balance (
+    p_customer_id IN NUMBER
+) RETURN VARCHAR2 IS
+    v_sum    NUMBER;
+    v_status VARCHAR2(50);
+BEGIN  
+    -- Müştərinin bütün hesablarının balans cəminin tapılması
+    -- NVL istifadə edilir ki, hesabı/balansı olmayan müştəri üçün NULL yerinə 0 qayıtsın
+    SELECT NVL(SUM(ac.balance), 0) 
+    INTO v_sum
+    FROM MY.accounts ac
+    WHERE ac.customer_id = p_customer_id;
+
+    -- Şərtlərə görə seqmentin təyin edilməsi
+    IF v_sum > 10000 THEN 
+        v_status := 'VIP'; 
+    ELSIF v_sum BETWEEN 1000 AND 10000 THEN
+        v_status := 'STANDARD';
+    ELSE 
+        v_status := 'BASIC'; 
+    END IF;
+
+    -- Təyin olunmuş seqmentin geri qaytarılması
+    RETURN v_status;
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Gözlənilməz xəta baş verərsə prosesi dayandırmamaq üçün BASIC qaytarılır
+        RETURN 'BASIC';
+END;
+/
+
+/*
+v_status VARCHAR2(50); sətrini silib RETURN hissəsini aşağıdakı kimi də yaza bilərik
+
+    -- Şərtlərə görə seqmentin təyin edilməsi və geri qaytarılması
+    IF v_sum > 10000 THEN 
+        RETURN 'VIP'; 
+    ELSIF v_sum BETWEEN 1000 AND 10000 THEN
+        RETURN 'STANDARD';
+    ELSE 
+        RETURN 'BASIC'; 
+    END IF;
+*/
+
+# İstifadə Qaydası (Real Ssenari)
+
+Funksiyanı marketinq hesabatlarında və ya birbaşa kütləvi SMS/Kampaniya siyahısı çıxararkən istifadə etmək çox rahatdır: 
+
+# 1. Müştəri Siyahısını Seqmentlərlə Birlikdə Çıxarmaq:
+
+SELECT 
+    customer_id,
+    full_name,
+    fn_segment_by_balance(customer_id) marketinq_seqmenti
+FROM 
+    MY.customers;
+
+# 2. Yalnız Müəyyən Seqmentə Uyğun Müştəriləri Filtrləmək (Məsələn: VIP-lər):
+
+SELECT 
+    customer_id,
+    full_name
+FROM 
+    MY.customers
+WHERE 
+    fn_segment_by_balance(customer_id) = 'VIP';
+
+
+# Nəticə və Qazanc
+
+* Biznes Çevikliyi: Marketinq komandası İT departamentinə müraciət etmədən istənilən an cari müştəri seqmentini görə bilir.
+* Mərkəzləşdirilmiş Məntiq: Gələcəkdə VIP limiti (məsələn, 10000-dən 15000-ə) dəyişərsə, yalnız bu funksiyanı yeniləmək kifayətdir, hesabat koda toxunmağa ehtiyac qalmır.
+* NULL Təhlükəsizliyi: NVL funksiyası sayəsində yeni qeydiyyatdan keçmiş və hələ hesabı olmayan müştərilər birbaşa BASIC seqmentinə təhlükəsiz şəkildə daxil edilir.
