@@ -62,4 +62,4 @@ END;
 
 * Sürət: Filialda müştərilərə xidmət göstərmə vaxtı azaldı.
 * Təhlükəsizlik və Standartlaşdırma: Kod təkrarının qarşısı alındı, biznes məntiqi verilənlər bazası səviyyəsində qorundu.
-* Kodun Oxunabilirliyi: Çoxsətrli qarışıq sorğular tək sətirlik funksiya çağırışı ilə əvəz olundu.
+* Kodun Oxunaqlığı: Çoxsətrli qarışıq sorğular tək sətirlik funksiya çağırışı ilə əvəz olundu.
