@@ -1,0 +1,72 @@
+# Hesabatlar üçün Müştəri Adlarının Oxunaqlı Formata Salınması (PL/SQL Funksiyası)
+
+Bu layihə, analitik və əməliyyat hesabatlarında yalnız rəqəmlərdən ibarət olan customer_id sahəsinin əvəzinə, istifadəçilər üçün anlaşıqlı olan müştərinin tam adını (Full Name) tək sətirlik çağırışla göstərmək üçün hazırlanmışdır. 
+
+# Problem və Biznes tələbi
+
+Hesabatlar hazırlayan zaman operatorlar və analitiklər hər dəfə customers cədvəlini əsas hesabat cədvəlləri ilə JOIN etmək məcburiyyətində qalırlar. Bu, böyük həcmli hesabat sorğularını vizual olaraq qarışdırır, kodun oxunaqlığını azaldır və təkrar kod yazılışına səbəb olur. 
+
+# Həll Yolu
+
+Yaradılmış fn_customer_full_name funksiyası sayəsində hesabat SQL-lərində mürəkkəb JOIN strukturlarına ehtiyac qalmır. Funksiya müştərinin ID-sini qəbul edərək onun tam adını geri qaytarır. Hesabatlarda kodun təmiz və oxunaqlı qalmasını təmin edir. 
+
+# Funksiyanın Spesifikasiyası
+
+* Giriş (Input): Müştərinin ID-si (p_customer_id - NUMBER)
+* Çıxış (Output): Müştərinin tam adı (VARCHAR2)
+* Performans Optimallaşdırılması: Funksiyaya DETERMINISTIC (və ya Oracle 11g+ üçün RESULT_CACHE) funksionallığı əlavə edilə bilər. Bu, eyni müştəri ID-si hesabatda minlərlə dəfə təkrarlanarsa, funksiyanın hər dəfə bazaya müraciət etmədən nəticəni keşdən (cache) sürətli gətirməsini təmin edir.
+
+
+CREATE OR REPLACE FUNCTION fn_customer_full_name (
+    p_customer_id IN NUMBER
+) RETURN VARCHAR2 
+DETERMINISTIC -- Eyni ID üçün təkrar sorğu etmədən hesabatı sürətləndirir
+IS
+    v_name MY.customers.full_name%TYPE;
+BEGIN
+    -- ID-yə uyğun müştərinin tam adının tapılması
+    SELECT cus.full_name 
+    INTO v_name
+    FROM MY.customers cus
+    WHERE cus.customer_id = p_customer_id;
+
+    -- Tapılan adın geri qaytarılması
+    RETURN v_name;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Əgər daxil edilən ID-yə uyğun müştəri tapılmazsa
+        RETURN 'Naməlum Müştəri (ID: ' || p_customer_id || ')'; 
+    WHEN OTHERS THEN
+        -- Digər gözlənilməz xətaların idarə olunması
+        RETURN 'Xəta baş verdi';
+END;
+/
+
+# İstifadə Qaydası (Hesabatlarda Nümunə)
+
+Hesabat yazarkən artıq böyük JOIN bloklarına ehtiyac yoxdur. Funksiyanı birbaşa SELECT daxilində çağırmaq kifayətdir: 
+
+# Hesabat sorğularında istifadə (Sadə və Oxunaqlı):
+
+SELECT 
+    order_id,
+    order_date,
+    customer_id,
+    fn_customer_full_name(customer_id) customer_name, -- Tək sətirdə adın gətirilməsi
+    total_amount
+FROM 
+    MY.orders;
+
+# PL/SQL daxilində loq yazarkən istifadə:
+
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('Əməliyyat edilən müştəri: ' || fn_customer_full_name(5));
+END;
+/
+
+# Nəticə və Qazanc
+
+* Hesabatların Sürətli Yazılması: Analitiklər JOIN yazmadan saniyələr içində müştəri adını hesata əlavə edirlər.
+* Mərkəzləşdirilmiş Xəta İdarəetməsi: Əgər sistemdən silinmiş bir ID hesabata düşərsə, hesabat xəta verib dayanmır, ekranda vizual olaraq "Naməlum Müştəri" yazısı göstərilir.
+* Performans qazancı: DETERMINISTIC açar sözü sayəsində təkrarlanan müştəri datalarında verilənlər bazası yüklənmir.
