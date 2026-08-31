@@ -1,0 +1,157 @@
+# Hesabın İcmal Məlumatlarının Oxunması (PL/SQL Proseduru)
+
+Bu layihə, menecerlərin bir müştəri hesabı haqqında bir neçə fərqli göstəricini (balans, əməliyyat sayı və son əməliyyat tarixi) fərqli sorğular yazmadan, eyni anda və tək bir müraciətlə əldə etməsi üçün hazırlanmışdır. 
+
+# Problem və Biznes Ehtiyacı
+
+Menecerlər və ya müştəri xidmətləri əməkdaşları bir hesab haqqında ümumi vəziyyəti öyrənmək üçün həm ACCOUNTS (hesablar), həm də TRANSACTIONS (əməliyyatlar) cədvəllərinə ayrı-ayrılıqda sorğular göndərməli olurlar. Bu, tətbiq tərəfindən verilənlər bazasına edilən müraciətlərin sayını artırır (network round-trip) və performansa mənfi təsir göstərir. 
+
+# Həll Yolu
+
+Yaradılmış pr_account_summary proseduru daxil olan p_account_id göstəricisinə əsasən verilənlər bazası daxilində optimallaşdırılmış sorğular icra edir. Prosedur OUT parametrlərindən istifadə edərək üç fərqli biznes göstəricisini tək çağırışda tətbiqə geri qaytarır. 
+
+# Prosedurun Spesifikasiyası
+
+* Giriş (Input): Hesab ID-si (p_account_id - NUMBER)
+* Çıxışlar (Outputs): 
+
+  * Hesabın cari balansı (p_balance - NUMBER)
+  * Hesab üzrə edilən ümumi əməliyyat sayı (p_txn_count - NUMBER)
+  * Hesabda edilən ən son əməliyyatın tarixi (p_last_txn_date - DATE)
+
+CREATE OR REPLACE PROCEDURE pr_account_summary (
+    p_account_id    IN  NUMBER, 
+    p_balance       OUT NUMBER,
+    p_txn_count     OUT NUMBER, 
+    p_last_txn_date OUT DATE
+) IS 
+BEGIN
+    -- 1. Hesabın balans məlumatının oxunması
+    SELECT ac.balance  
+    INTO p_balance 
+    FROM MY.accounts ac 
+    WHERE ac.account_id = p_account_id;
+   
+    -- 2. Əməliyyat sayı və son əməliyyat tarixinin aqreqasiya edilməsi
+    SELECT COUNT(*), MAX(tr.txn_date)
+    INTO p_txn_count, p_last_txn_date
+    FROM MY.transactions tr
+    WHERE tr.account_id = p_account_id;    
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Əgər daxil edilən ID-yə uyğun hesab yoxdursa, çıxışları sıfırlayırıq
+        p_balance       := 0;
+        p_txn_count     := 0;
+        p_last_txn_date := NULL;
+    WHEN OTHERS THEN
+        -- Digər gözlənilməz xətaların idarə olunması
+        RAISE_APPLICATION_ERROR(-20002, 'İcmal məlumatları toplanarkən xəta baş verdi: ' || SQLERRM);
+END;
+/
+
+# Anonim Blok İlə Test (Verification)
+
+Prosedurun işləməsini və çıxış parametrlərini yoxlamaq üçün aşağıdakı anonim PL/SQL blokundan istifadə edək: 
+
+SET SERVEROUTPUT ON;
+
+--prosedura daha detallı istifadəsi
+DECLARE
+    -- Çıxış parametrlərini qəbul edəcək lokal dəyişənlər
+    v_balance       NUMBER;
+    v_txn_count     NUMBER;
+    v_last_txn_date DATE;
+    v_test_acct_id  NUMBER := 118; -- Test etmək istədiyimiz Hesab ID-si
+BEGIN
+    -- Prosedurun çağırılması
+    pr_account_summary(
+        p_account_id    => v_test_acct_id,
+        p_balance       => v_balance,
+        p_txn_count     => v_txn_count,
+        p_last_txn_date => v_last_txn_date
+    );
+	
+
+    -- Nəticələrin konsolda çap edilməsi
+    DBMS_OUTPUT.PUT_LINE('--- HESABIN İCMAL HESABATI (ID: ' || v_test_acct_id || ') ---');
+    DBMS_OUTPUT.PUT_LINE('Cari Balans          : ' || v_balance || ' AZN');
+    DBMS_OUTPUT.PUT_LINE('Ümumi Əməliyyat Sayı : ' || v_txn_count);
+    DBMS_OUTPUT.PUT_LINE('Son Əməliyyat Tarixi : ' || TO_CHAR(v_last_txn_date, 'DD.MM.YYYY HH24:MI:SS' ));
+END;
+/ 
+
+---Posedura qısa müraciət forması
+DECLARE
+    v_balance NUMBER;
+    v_count   NUMBER;
+    v_last    DATE;
+BEGIN 
+	pr_account_summary(118,v_balance,v_count,v_last );
+    DBMS_OUTPUT.PUT_LINE (
+		'Balance: ' || v_balance    
+		|| ' say: ' || v_count 
+		|| ' son tarix: ' || to_char ( v_last, 'dd.mm.yyyy' ) 
+    );
+end;
+
+# Nəticə və Qazanc
+
+* Şəbəkə Performansı (Network Round-Trip): Tətbiq (məsələn, Java/C# backend və ya kənar hesabat paneli) bazaya 3 fərqli sorğu göndərmək əvəzinə, cəmi 1 müraciətlə bütün datanı götürür.
+* Məlumat Bütövlüyü (Data Integrity): Müştərinin əməliyyat sayı sıfır (0) olsa belə, MAX(txn_date) funksiyası xəta vermədən təhlükəsiz şəkildə NULL qaytarır və tətbiqin çökməsinin qarşısını alır.
+* Xətaya Davamlılıq: Hesab tamamilə tapılmadıqda sistem NO_DATA_FOUND blokuna düşür və çıxış dəyişənlərinə 0 və NULL mənimsədərək prosesi vizual olaraq düzgün idarə edir.
+
+Qeyd: Bu iki sorğunu join ilə birləşdirməklə də olar.
+-- 1. Hesabın balans məlumatının oxunması
+    SELECT ac.balance  
+    INTO p_balance 
+    FROM MY.accounts ac 
+    WHERE ac.account_id = p_account_id;
+   
+    -- 2. Əməliyyat sayı və son əməliyyat tarixinin aqreqasiya edilməsi
+    SELECT COUNT(*), MAX(tr.txn_date)
+    INTO p_txn_count, p_last_txn_date
+    FROM MY.transactions tr
+    WHERE tr.account_id = p_account_id; 
+	
+Hətta bu iki sorğunu JOIN ilə birləşdirərək bazaya tək bir müraciət etmək performans və kodun optimallaşdırılması baxımından daha yaxşı bir yanaşmadır.
+
+Burada ən kritik məqam LEFT JOIN istifadə etməkdir. Çünki müştərinin hesabı ola bilər, amma hələ heç bir əməliyyatı (transactions) olmaya bilər. INNER JOIN yazsaq, əməliyyatı olmayan müştərilərin balansı da hesabatda çıxmaz.
+
+Birləşdirilmiş sorğu ilə prosedurumuz daha effektiv formada belə olacaq:
+
+CREATE OR REPLACE PROCEDURE pr_account_summary (
+    p_account_id    IN  NUMBER, 
+    p_balance       OUT NUMBER,
+    p_txn_count     OUT NUMBER, 
+    p_last_txn_date OUT DATE
+) IS 
+BEGIN
+    -- İki sorğu LEFT JOIN və GROUP BY ilə tək bir sorğuya endirildi
+    SELECT 
+        ac.balance,
+        COUNT(tr.account_id), -- COUNT(*) yerinə tr.account_id yazdıq ki, əməliyyat yoxdursa 0 qaytarsın
+        MAX(tr.txn_date)
+    INTO 
+        p_balance, 
+        p_txn_count, 
+        p_last_txn_date
+    FROM 
+        MY.accounts ac
+    LEFT JOIN 
+        MY.transactions tr ON ac.account_id = tr.account_id
+    WHERE 
+        ac.account_id = p_account_id
+    GROUP BY 
+        ac.balance;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Əgər daxil edilən ID-yə uyğun ümumiyyətlə hesab tapılmazsa
+        p_balance       := 0;
+        p_txn_count     := 0;
+        p_last_txn_date := NULL;
+    WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR(-20002, 'İcmal məlumatları toplanarkən xəta baş verdi: ' || SQLERRM);
+END pr_account_summary;
+/
