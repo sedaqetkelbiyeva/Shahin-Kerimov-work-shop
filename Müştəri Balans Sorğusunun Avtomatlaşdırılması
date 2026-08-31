@@ -1,0 +1,65 @@
+# Müştəri Balans Sorğusunun Avtomatlaşdırılması (PL/SQL Funksiyası)
+
+Bu layihə, filial əməkdaşlarının müştərilərə cavab verərkən hər dəfə əl ilə çoxsətrli SQL sorğuları yazmasının qarşısını almaq və prosesi **tək sətirlik bir çağırışa** endirmək üçün hazırlanmışdır. 
+
+# Problem və Biznes tələbi
+
+Filial operatorları müştərinin balansını öyrənmək üçün hər dəfə təkrarlanan çoxsətrli SELECT ... FROM ... WHERE sorğuları yazırdılar. Bu həm vaxt itkisinə səbəb olur, həm də insan xətası ehtimalını (məsələn, cədvəl adının və ya şərtlərin səhv yazılması) artırırdı. 
+
+# Həll Yolu
+
+Yaradılmış fn_get_account_balance funksiyası sayəsində bu mürəkkəb və təkrarlanan kod blokları verilənlər bazası tərəfində mərkəzləşdirilir. Əməkdaşlar yalnız müştərinin hesab ID-sini daxil etməklə tək sətirdə balansı əldə edə bilirlər. 
+
+# Funksiyanın Spesifikasiyası
+
+*Giriş (Input): Müştərinin hesab ID-si (p_account_id - NUMBER)
+*Çıxış (Output): Müştəri hesabının cari balansı (NUMBER)
+*Dinamik Tip Təyini: MY.accounts.balance%type istifadə edilərək, gələcəkdə cədvəldə balansın məlumat tipi dəyişərsə, funksiyanın xəta vermədən avtomatik uyğunlaşması təmin olunub.
+
+CREATE OR REPLACE FUNCTION fn_get_account_balance (
+    p_account_id IN NUMBER
+) RETURN NUMBER IS
+    v_balance MY.accounts.balance%TYPE;
+BEGIN
+    -- Hesab ID-sinə görə balansın tapılması
+    SELECT acct.balance 
+    INTO v_balance 
+    FROM MY.accounts acct 
+    WHERE acct.account_id = p_account_id;
+
+    -- Tapılan balansın geri qaytarılması
+    RETURN v_balance;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        -- Əgər daxil edilən ID-yə uyğun hesab tapılmazsa, 0 və ya NULL qaytarır
+        RETURN 0; 
+    WHEN OTHERS THEN
+        -- Digər gözlənilməz xətaların idarə olunması
+        RAISE_APPLICATION_ERROR(-20001, 'Balans oxunarkən xəta baş verdi: ' || SQLERRM);
+END;
+/
+
+# İstifadə Qaydası (Nümunələr)
+
+Funksiya bazaya yazıldıqdan sonra filial əməkdaşları və ya tətbiq proqramçıları balansı cəmi tək sətirlə çağıra bilərlər: 
+
+# Standart SQL daxilində istifadə:
+
+SELECT fn_get_account_balance(118) cari_balans FROM dual;
+
+# Digər bir PL/SQL bloku daxilində istifadə:
+
+DECLARE
+    v_my_balance NUMBER;
+BEGIN
+    v_my_balance := fn_get_account_balance(118);
+    DBMS_OUTPUT.PUT_LINE('Müştərinin Balansı: ' || v_my_balance);
+END;
+/
+
+# Nəticə və Qazanc
+
+* Sürət: Filialda müştərilərə xidmət göstərmə vaxtı azaldı.
+* Təhlükəsizlik və Standartlaşdırma: Kod təkrarının qarşısı alındı, biznes məntiqi verilənlər bazası səviyyəsində qorundu.
+* Kodun Oxunabilirliyi: Çoxsətrli qarışıq sorğular tək sətirlik funksiya çağırışı ilə əvəz olundu.
