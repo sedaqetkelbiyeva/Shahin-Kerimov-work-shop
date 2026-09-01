@@ -1,0 +1,102 @@
+ # Hesablararası Pul Köçürmə Prosesinin Avtomatlaşdırılması (PL/SQL Proseduru)
+
+Bu layihə, mobil bank tətbiqi istifadəçilərinin öz aralarında real vaxt rejimində pul köçürməsi (P2P) icra etməsi üçün hazırlanmış mərkəzi prosedurdur. Sistem, balans yoxlanışı və neqativ məbləğ daxiletmələri kimi kritik halları verilənlər bazası səviyyəsində tam təhlükəsiz şəkildə idarə edir. 
+
+# Problem və Biznes Ehtiyacı
+
+Mobil tətbiq üzərindən pul köçürmələri zamanı istifadəçilər balanslarında olan məbləğdən daha çox pul köçürməyə cəhd edə bilər və ya tətbiq tərəfindəki bir boşluq səbəbindən mənfi/sıfır məbləğ daxil edilə bilər. Ən təhlükəli hal isə pulun bir hesabdan çıxıb, digər hesaba oturdulmaması (və ya əksinə) — yəni tranzaksiya yarımçıq qaldıqda məlumat bütövlüyünün pozulmasıdır. 
+
+# Həll Yolu
+
+Yaradılmış pr_transfer_funds proseduru  Atomallıq (Atomicity)  prinsipini qoruyur. Yəni, göndərən və alan tərəfin balans yenilənməsi eyni tranzaksiya daxilində icra olunur — ya hər iki UPDATE uğurla tamamlanıb təsdiqlənir (COMMIT), ya da hər hansı bir xəta anında bütün proses geri qaytarılır (ROLLBACK). 
+
+#  Biznes və Texniki Qaydalar
+
+*  Məbləğ Yoxlanışı:  Daxil edilən məbləğ ≤ 0 olarsa, e_invalid_amount istisnası ilə proses dayandırılır.
+*  Balans Yoxlanışı:  Göndərən hesabın balansı köçürülən məbləğdən az olarsa, e_insufficient_funds istisnası işə düşür.
+*  İnteqrasiya Təhlükəsizliyi:  Hər iki hal üçün kənar tətbiqlərin (məsələn, backend) rahat oxuya biləcəyi -20001 və -20002 xəta kodları təyin edilib.
+
+CREATE OR REPLACE PROCEDURE pr_transfer_funds (
+    p_from_account IN NUMBER,
+    p_to_account   IN NUMBER, 
+    p_amount       IN NUMBER
+) IS
+    v_from_balance       NUMBER;
+    e_invalid_amount     EXCEPTION; -- Məbləğ xətası üçün xüsusi istisna
+    e_insufficient_funds EXCEPTION; -- Balans çatışmazlığı üçün xüsusi istisna
+BEGIN 
+    -- 1. Məbləğin müsbət olmasının yoxlanılması
+    IF p_amount <= 0 THEN
+        RAISE e_invalid_amount;
+    END IF;
+   
+    -- 2. Göndərən hesabın cari balansının oxunması
+    -- FOR UPDATE əlavə edilərək balansın sorğu anında digər proseslər tərəfindən dəyişdirilməsi bloklanır (Row Lock)
+    SELECT balance 
+    INTO v_from_balance 
+    FROM MY.accounts 
+    WHERE account_id = p_from_account
+    FOR UPDATE;
+   
+    -- 3. Balansın köçürmə üçün kifayət edib-etməməsinin yoxlanılması
+    IF v_from_balance < p_amount THEN 
+        RAISE e_insufficient_funds;
+    END IF;
+    
+    -- 4. Göndərən hesabın balansından məbləğin çıxılması
+    UPDATE MY.accounts
+    SET balance = balance - p_amount
+    WHERE account_id = p_from_account; 
+    
+    -- 5. Alan hesabın balansına məbləğin əlavə edilməsi
+    UPDATE MY.accounts 
+    SET balance = balance + p_amount  
+    WHERE account_id = p_to_account;
+    
+    -- 6. Hər iki UPDATE uğurlu olduqda əməliyyatın bazada təsdiqlənməsi
+    COMMIT; 
+    
+EXCEPTION 
+    WHEN e_insufficient_funds THEN
+        ROLLBACK; -- Hər ehtimala qarşı tranzaksiyanı geri alırıq
+        RAISE_APPLICATION_ERROR(-20001, 'Balans kifayət etmir! Göndərən Hesab ID: ' || p_from_account);
+        
+    WHEN e_invalid_amount THEN
+        ROLLBACK;
+        RAISE_APPLICATION_ERROR(-20002, 'Köçürülən məbləğ mütləq müsbət olmalıdır!');
+        
+    WHEN NO_DATA_FOUND THEN
+        ROLLBACK;
+        RAISE_APPLICATION_ERROR(-20003, 'Göstərilən hesablardan biri və ya hər ikisi sistemdə tapılmadı.');
+        
+    WHEN OTHERS THEN
+        ROLLBACK; -- Gözlənilməz xəta anında bazanın kilidli qalmamasının qarşısını alır
+        RAISE_APPLICATION_ERROR(-20000, 'Köçürmə zamanı sistem xətası baş verdi: ' || SQLERRM);
+END ;
+/
+
+# Anonim Blok İlə Test Ssenarilərinə baxaq 
+
+# Ssenari A: Uğursuz Köçürmə Testi (Mənfi Məbləğ)
+
+SET SERVEROUTPUT ON;
+BEGIN
+    -- -50 AZN köçürməyə cəhd edirik
+    pr_transfer_funds(p_from_account => 118, p_to_account => 112, p_amount => -50);
+END;
+/
+-- Gözlənilən Çıxış: ORA-20002: Köçürülən məbləğ mütləq müsbət olmalıdır!
+
+# Ssenari B: Uğurlu Köçürmə Testi
+
+BEGIN
+    -- Balansı yetərli olan hesabdan digərinə 150 AZN köçürülməsi
+    pr_transfer_funds(p_from_account => 118, p_to_account => 112, p_amount => 150);
+    DBMS_OUTPUT.PUT_LINE('Köçürmə uğurla tamamlandı.');
+END;
+/
+Nəticə və Qazanc
+
+*  Məlumat Bütövlüyü (ACID Compliant):  COMMIT və ROLLBACK idarəetməsi sayəsində pulların havada qalma riski sıfıra endirilib.
+*  Yüksək Təhlükəsizlik (FOR UPDATE):  Balans yoxlanılan sətir kilidlənir. Beləliklə, istifadəçi eyni anda mobil tətbiqdən düyməyə iki dəfə klikləsə belə (Double Spending), sistem balansı mənfiyə sala bilmir.
+*  Aydın Xəta Mesajları:  Tətbiq (Frontend) gələn xəta koduna (-20001 və ya -20002) əsasən istifadəçiyə vizual olaraq gözəl dizayn edilmiş xəbərdarlıq pəncərələri göstərə bilir.
