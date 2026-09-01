@@ -1,0 +1,75 @@
+# İstifadəçi Xətalarının İdarə Edilməsi və Kart Statusunun Oxunması (PL/SQL Proseduru)
+
+Bu layihə, müştəri xidməti əməkdaşlarının sistemə səhv kart nömrəsi daxil etdiyi zaman yaranan qarışıq və anlaşılmaz verilənlər bazası xətalarının qarşısını almaq və istifadəçiyə 	aydın, anlaşıqlı bildiriş mesajı göstərmək üçün hazırlanmışdır. 
+
+# Problem və Biznes Ehtiyacı
+
+Müştəri xidməti işçiləri kart nömrəsini daxil edərkən tez-tez mexaniki xətalara yol verirlər. Sistemdə həmin ID-yə uyğun kart tapılmadıqda Oracle avtomatik olaraq standart ORA-01403: no data found xətası fırladır və tətbiq (və ya ekran) anlaşılmaz texniki mesajla donurdu. Bu, həm işçinin vaxtını alır, həm də proqramda nasazlıq təəssüratı yaradır. 
+
+# Həll Yolu
+
+Yaradılmış pr_get_card_status proseduru daxili istisnaların idarə edilməsi (Nested Exception Handling) strukturundan istifadə edir. Kart tapılmadıqda sistem çökmür, xətanı dərhal lokallaşdırır və operatorun ekranına birbaşa korporativ dildə mesaj çıxarır. 
+
+# Texniki Strukturu və Özəlliyi
+
+* Giriş (Input):	 Kartın unikal ID-si (p_card_id - NUMBER)
+* Xüsusi İstisna (User-Defined Exception):	 Kod daxilində e_card_not_found adlı xüsusi xəta növü yaradılıb.
+* 	Daxili Blok (Nested Block):	 SELECT INTO sorğusu özəl bir BEGIN-END bloku daxilinə alınıb. Bu, xətanın baş verdiyi an dərhal tutulub (catch) daha yuxarı qatdakı əsas xəta blokuna ötürülməsini təmin edir.
+
+CREATE OR REPLACE PROCEDURE pr_get_card_status (
+    p_card_id IN NUMBER
+) IS
+    v_status          MY.cards.status%TYPE;
+    e_card_not_found  EXCEPTION; -- İstifadəçi tərəfindən təyin olunmuş xüsusi istisna
+BEGIN
+    -- 1. Daxili blok (Nested Block) - Sorğunun təhlükəsiz icrası
+    BEGIN
+        SELECT ca.status  
+        INTO v_status 
+        FROM MY.cards ca
+        WHERE ca.card_id = p_card_id;
+    EXCEPTION 
+        WHEN NO_DATA_FOUND THEN
+            -- Standart Oracle xətasını öz xüsusi xətamıza çeviririk
+            RAISE e_card_not_found;
+    END;
+    
+    -- 2. Əgər kart tapılarsa, statusun çap edilməsi
+    DBMS_OUTPUT.PUT_LINE('Kart statusu: ' || v_status);
+
+EXCEPTION
+    -- 3. Əsas xəta bloku - Öz xüsusi xətamızın idarə olunması
+    WHEN e_card_not_found THEN
+        DBMS_OUTPUT.PUT_LINE('Kart tapılmadı: ID = ' || p_card_id);
+    WHEN OTHERS THEN
+        -- Digər gözlənilməz sistem xətalarının idarə olunması
+        DBMS_OUTPUT.PUT_LINE('Gözlənilməz xəta baş verdi: ' || SQLERRM);
+END pr_get_card_status;
+/
+
+
+# Anonim Blok İlə Test 
+
+Proseduru yoxlamaq üçün aşağıdakı test ssenarisindən istifadə edə bilərsiniz. Test zamanı verilənlər bazası konsol çıxışını aktiv etməyi unutmayın: 
+
+sql
+
+-- Konsol çıxışını aktivləşdiririk
+SET SERVEROUTPUT ON;
+
+-- Test bloku
+BEGIN
+    -- Mövcud olmayan bir kart ID-si daxil edərək xətanın idarə olunmasını yoxlayırıq
+    pr_get_card_status(p_card_id => 100);
+END;
+/
+
+#  Gözlənilən Çıxış (Output):
+
+Kart tapılmadı: ID = 100
+
+
+# Nəticə və Qazanc
+
+* 	İstifadəçi Təcrübəsi (UX):	 Müştəri xidməti işçisi qorxulu texniki xəta kodları əvəzinə tam anlaşıqlı bildiriş mesajı görür və səhvini dərhal düzəldir.
+* 	Kodun Modulluğu:	 Daxili blok strukturu sayəsində verilənlər bazası səviyyəsində proqram axını qırılmır və daha oxunaqlı SQL arxitekturası təmin edilir.
