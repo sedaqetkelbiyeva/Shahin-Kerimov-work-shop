@@ -1,0 +1,121 @@
+# Audit üçün Sistem Xətalarının İzlənməsi və Loqlaşdırılması (PL/SQL)
+
+Bu layihə, Audit departamentinin tələblərinə uyğun olaraq, kritik pul köçürmə əməliyyatları zamanı baş verən bütün gözlənilməz sistem xətalarının (hansı prosedurda, nə vaxt və hansı xəta mesajı ilə) mərkəzi bir cədvəldə izlənilməsi üçün hazırlanmışdır. 
+
+# Problem və Biznes Ehtiyacı
+
+Sistemdə gözlənilməz bir xəta (məsələn, şəbəkə kəsilməsi, cədvəl kilidlənməsi və ya mövcud olmayan hesab ID-si) baş verdikdə, bu xəta loq qeydinə alınmırsa, Audit və Dəstək (Support) komandaları problemin kökünü (root cause) tapa bilmirlər. Lakin loq yazarkən əsas tranzaksiyanın (pul köçürməsinin) ROLLBACK olması loq yazısını da silə bilər, yaxud loqun COMMIT edilməsi yarımçıq pul köçürməsini bazada səhvən təsdiqləyə bilər. 
+
+# Həll Yolu
+
+1. 	Mərkəzi Loq Cədvəli:	 Bütün xətaları toplamaq üçün ERROR_LOG cədvəli qurulur.
+2. 	Avtonom Tranzaksiya (Autonomous Transaction):	 Loq yazma prosesi əsas prosedurun tranzaksiyasından tamamilə təcrid olunur. Köçürmə əməliyyatı xəta verib ROLLBACK olsa belə, xəta loqu bazaya mütləq yazılır və itmir	.
+
+# 1. Verilənlər Bazası Strukturunun Qurulması
+
+İlk növbədə xətaların yığılacağı cədvəli və müstəqil loq yazma prosedurunu yaradırıq: 
+
+-- Loq cədvəlinin yaradılması
+CREATE TABLE error_log (
+    log_id        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    proc_name     VARCHAR2(100),
+    error_message VARCHAR2(4000),
+    log_date      DATE DEFAULT SYSDATE
+);
+/
+
+-- Avtonom Loq Yazma Proseduru (Məlumat bütövlüyünü qorumaq üçün)
+CREATE OR REPLACE PROCEDURE pr_log_error (
+    p_proc_name     IN VARCHAR2,
+    p_error_message IN VARCHAR2
+) IS
+    PRAGMA AUTONOMOUS_TRANSACTION; -- Əsas tranzaksiyadan müstəqil işləməsini təmin edir
+BEGIN
+    INSERT INTO error_log (proc_name, error_message)
+    VALUES (p_proc_name, p_error_message);
+    COMMIT; -- Yalnız loqu təsdiqləyir, pul köçürməsinə təsir etmir
+END ;
+/
+
+#  2. Yenilənmiş Pul Köçürmə Proseduru
+
+CREATE OR REPLACE PROCEDURE pr_transfer_funds (
+    p_from_account IN NUMBER,
+    p_to_account   IN NUMBER, 
+    p_amount       IN NUMBER
+) IS
+    v_from_balance      NUMBER;
+    e_invalid_amount    EXCEPTION;
+    e_insufficient_funds EXCEPTION;
+    v_errmsg            VARCHAR2(4000);
+BEGIN 
+    -- 1. Məbləğ yoxlanışı
+    IF p_amount <= 0 THEN
+        RAISE e_invalid_amount;
+    END IF;
+   
+    -- 2. Göndərən hesabın yoxlanılması
+    SELECT balance INTO v_from_balance 
+    FROM MY.accounts 
+    WHERE account_id = p_from_account;
+   
+    -- 3. Balans yoxlanışı
+    IF v_from_balance < p_amount THEN 
+        RAISE e_insufficient_funds;
+    END IF;
+    
+    -- 4. Balansların yenilənməsi
+    UPDATE MY.accounts
+    SET balance = balance - p_amount
+    WHERE account_id = p_from_account; 
+    
+    UPDATE MY.accounts 
+    SET balance = balance + p_amount  
+    WHERE account_id = p_to_account;
+    
+    COMMIT; -- Uğurlu əməliyyatın təsdiqi
+    
+EXCEPTION 
+    WHEN e_insufficient_funds THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Balans kifayət etmir: Hesab ' || p_from_account);
+        
+    WHEN e_invalid_amount THEN
+        RAISE_APPLICATION_ERROR(-20002, 'Məbləğ müsbət olmalıdır!');
+        
+    WHEN OTHERS THEN
+        v_errmsg := SQLERRM;
+        -- Müstəqil loq proseduru çağırılır
+        pr_log_error(p_proc_name => 'PR_TRANSFER_FUNDS', p_error_message => v_errmsg);
+        
+        -- Xətanı sistemə və üst proqrama aynən ötürürük (Re-raise)
+        RAISE;
+END ;
+/
+
+# 3. Audit və Test Ssenarisi (Verification)
+
+Qəsdən sistemdə mövcud olmayan bir account_id (999999) daxil edərək NO_DATA_FOUND sistem xətası yaradırıq və onun avtomatik olaraq loq cədvəlinə yazılmasını yoxlayırıq: 
+
+SET SERVEROUTPUT ON;
+
+-- Test çağırışı
+BEGIN
+    pr_transfer_funds(p_from_account => 999999, p_to_account => 112, p_amount => 50);
+END;
+/
+
+# Loq Cədvəlinin Yoxlanılması:
+
+Xəta baş verdikdən sonra loq cədvəlini sorğulayırıq: 
+
+SELECT log_id, proc_name, error_message, TO_CHAR(log_date, 'DD.MM.YYYY HH24:MI:SS') as log_vaxti 
+FROM error_log;
+
+# Gözlənilən Audit Nəticəsi:
+		
+PR_TRANSFER_FUNDSORA-01403: no data found	01.09.2026 12:53:00	
+
+# Nəticə və Qazanc
+
+* 	Tam Audit İzlənilməsi:	 Gözlənilməz xətaların baş vermə tarixi və səbəbi sistem tərəfindən saniyəbəsaniyə qeyd olunur.
+* 	Məlumat İtmə Təhlükəsizliyi (PRAGMA):	 Pul köçürməsi yarıda qalsa və köçürmə tranzaksiyası ROLLBACK olunsa belə, xətanın izi ERROR_LOG cədvəlində uğurla saxlanılır.
